@@ -89,7 +89,7 @@ class Repl(object):
 
     def read(self):
         """Reads at least one decoded char of output"""
-        while True:
+        while 1:
             bs = self.read_bytes()
             if not bs:
                 return None

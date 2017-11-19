@@ -12,7 +12,10 @@ import signal
 from sublime import load_settings, error_message
 from .autocomplete_server import AutocompleteServer
 from .killableprocess import Popen
-
+import glob
+import shlex
+import collections
+import io
 PY3 = sys.version_info[0] == 3
 
 if os.name == 'posix':
@@ -35,7 +38,7 @@ class Unsupported(Exception):
 def win_find_executable(executable, env):
     """Explicetely looks for executable in env["PATH"]"""
     if os.path.dirname(executable):
-        return executable # executable is already absolute filepath
+        return executable  # executable is already absolute filepath
     path = env.get("PATH", "")
     pathext = env.get("PATHEXT") or ".EXE"
     dirs = path.split(os.path.pathsep)
@@ -55,7 +58,8 @@ def win_find_executable(executable, env):
 class SubprocessRepl(Repl):
     TYPE = "subprocess"
 
-    def __init__(self, encoding, cmd=None, env=None, cwd=None, extend_env=None, soft_quit="", autocomplete_server=False, **kwds):
+    def __init__(self, encoding, cmd=None, env=None, cwd=None, extend_env=None, soft_quit="",
+                 autocomplete_server=False, filt_warns=False, **kwds):
         super(SubprocessRepl, self).__init__(encoding, **kwds)
         settings = load_settings('SublimeREPL.sublime-settings')
 
@@ -77,23 +81,43 @@ class SubprocessRepl(Repl):
                 strings_env[k.decode("utf-8")] = v.decode("utf-8")
             env = strings_env
 
+        self._filt_warns = filt_warns
         self._cmd = self.cmd(cmd, env)
         self._soft_quit = soft_quit
         self._killed = False
         self.popen = Popen(
-                        self._cmd,
-                        startupinfo=self.startupinfo(settings),
-                        creationflags=self.creationflags(settings),
-                        bufsize=1,
-                        cwd=self.cwd(cwd, settings),
-                        env=env,
-                        stderr=subprocess.STDOUT,
-                        stdin=subprocess.PIPE,
-                        stdout=subprocess.PIPE)
+            self._cmd,
+            startupinfo=self.startupinfo(settings),
+            creationflags=self.creationflags(settings),
+            bufsize=io.DEFAULT_BUFFER_SIZE,  # -1 if self._filt_warns else 1
+            cwd=self.cwd(cwd, settings), env=env,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+
+        # try to filter out gtk warnings
+        if self._filt_warns:
+            print('__init__ with filt_warns')
+            # strange, cat works, but grep does not
+            # grep --line-buffered does something
+            cmd = shlex.split("grep -v -e 'Gtk-WARNING' -e 'Gtk-Message' -e 'GLib-GIO-WARNING'") if 0 else 'cat'
+            self.filt = Popen(cmd,
+                              bufsize=io.DEFAULT_BUFFER_SIZE,
+                              cwd=self.cwd(cwd, settings),
+                              startupinfo=self.startupinfo(settings),
+                              creationflags=self.creationflags(settings),
+                              env=env,
+                              stdin=self.popen.stdout,
+                              stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT,
+                              )
+        else:
+            self.filt = self.popen
 
         if POSIX:
-            flags = fcntl.fcntl(self.popen.stdout, fcntl.F_GETFL)
-            fcntl.fcntl(self.popen.stdout, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+            flags = fcntl.fcntl(self.filt.stdout, fcntl.F_GETFL)
+            fcntl.fcntl(self.filt.stdout, fcntl.F_SETFL, flags | os.O_NONBLOCK)
 
     def autocomplete_server_port(self):
         if not self._autocomplete_server:
@@ -182,7 +206,7 @@ class SubprocessRepl(Repl):
                 enc_k = self.encoder(str(k))[0]
                 enc_v = self.encoder(str(v))[0]
             except UnicodeDecodeError:
-                continue #f*** it, we'll do it live
+                continue  # f*** it, we'll do it live
             else:
                 bytes_env[enc_k] = enc_v
         return bytes_env
@@ -201,13 +225,13 @@ class SubprocessRepl(Repl):
             from .killableprocess import STARTUPINFO, STARTF_USESHOWWINDOW
             startupinfo = STARTUPINFO()
             startupinfo.dwFlags |= STARTF_USESHOWWINDOW
-            startupinfo.wShowWindow |= 1 # SW_SHOWNORMAL
+            startupinfo.wShowWindow |= 1  # SW_SHOWNORMAL
         return startupinfo
 
     def creationflags(self, settings):
         creationflags = 0
         if os.name == "nt":
-            creationflags = 0x8000000 # CREATE_NO_WINDOW
+            creationflags = 0x8000000  # CREATE_NO_WINDOW
         return creationflags
 
     def name(self):
@@ -218,28 +242,31 @@ class SubprocessRepl(Repl):
         return " ".join([str(x) for x in self._cmd])
 
     def is_alive(self):
-        return self.popen.poll() is None
+        a = self.popen.poll() is None
+        b = self.filt.poll() is None if self._filt_warns else 1
+        return a and b
 
     def read_bytes(self):
-        out = self.popen.stdout
+        out = self.filt.stdout
+        # stackoverflow.com/a/23696745
         if POSIX:
-            while True:
-                i, _, _ = select.select([out], [], [])
+            rlist, wlist, xlist = [out], [], []
+            bufsize = io.DEFAULT_BUFFER_SIZE  # io.DEFAULT_BUFFER_SIZE bytes (usually 8192)
+            while 1:
+                i, _, _ = select.select(rlist, wlist, xlist)
                 if i:
-                    return out.read(4096)
+                    return out.read(bufsize)
         else:
             # this is windows specific problem, that you cannot tell if there
             # are more bytes ready, so we read only 1 at a times
 
-            while True:
-                byte = self.popen.stdout.read(1)
+            while 1:
+                byte = out.read(1)
                 if byte == b'\r':
                     # f'in HACK, for \r\n -> \n translation on windows
                     # I tried universal_endlines but it was pain and misery! :'(
                     continue
                 return byte
-
-
 
     def write_bytes(self, bytes):
         si = self.popen.stdin
@@ -250,6 +277,8 @@ class SubprocessRepl(Repl):
         self._killed = True
         self.write(self._soft_quit)
         self.popen.kill()
+        if self._filt_warns:
+            self.filt.kill()
 
     def available_signals(self):
         signals = {}
@@ -264,4 +293,82 @@ class SubprocessRepl(Repl):
             self._killed = True
         if self.is_alive():
             self.popen.send_signal(sig)
+            if self._filt_warns:
+                self.filt.send_signal(sig)
 
+
+VENVS_ENVIRON = dict()
+
+
+class SubprocessReplVenv(SubprocessRepl):
+    TYPE = 'subprocessvenv'
+
+    def _print(self, *args, **kwargs):
+        if self.debug:
+            _args = []
+            for _ in args:
+                if isinstance(_, dict):
+                    _args.append('\n'.join(str((k, v)) for k, v in collections.OrderedDict(sorted(_.items())).items()))
+                else:
+                    _args.append(_)
+            print(*_args, **kwargs)
+
+    def shell_source(self, script, py_ver):
+        'emulates sourcing a script, return a dict env'
+        # --login will make bash source either ~/.bash_profile, ~/.bash_login, or ~/.profile
+        # -i will make bash source ~/.bashrc (interactive shell)
+        # here we only need login to have access to the conda root activate ?
+        cmd = shlex.split("bash --login -c '. {SCRIPT} {PY_VER}; env'".format(SCRIPT=script, PY_VER=py_ver))
+        stdout = subprocess.Popen(cmd, stdout=subprocess.PIPE).stdout
+        return dict((line.split('=', 1) for line in stdout.read().decode().splitlines()))
+
+    def scan_for_virtualenvs(self, venv_paths):
+        'scans a directory for a dir named bin with a script activate in it'
+        bin_dir = 'Scripts' if os.name == 'nt' else 'bin'
+        found_dirs = set()
+        for venv_path in venv_paths:
+            p = os.path.expanduser(venv_path)
+            # print(p)
+            pattern = os.path.join(p, '*', bin_dir, 'activate')
+            found_dirs.update(list(map(os.path.dirname, glob.glob(pattern))))
+        return sorted(found_dirs)
+
+    def __init__(self, encoding, cmd=None, env=None, cwd=None, extend_env=None,
+                 soft_quit="", autocomplete_server=False,
+                 debug=False, force_source=False, **kwargs):
+        # super(SubprocessRepl, self).__init__(encoding, **kwds)
+        self.debug = debug
+
+        settings = load_settings('SublimeREPL.sublime-settings')
+        venv_paths = settings.get('python_virtualenv_paths')
+        use_wrapped = settings.get('use_wrapped')
+
+        venvs_bin_dir = self.scan_for_virtualenvs(venv_paths)
+        wrappers_dir = {os.path.basename(os.path.dirname(_)): os.path.join(_, 'wrappers/conda') for _ in venvs_bin_dir}
+
+        self._print('venvs bin dirs', venvs_bin_dir)
+        self._print('wrappers bin dirs', wrappers_dir)
+
+        conda_env = env if env else self.getenv(settings)
+        py_ver = extend_env.get('PY_VERSION', 'py3') if extend_env else 'py3'  # default 'py3' env
+
+        # using wrappers created with the conda package exec-wrappers, if not found, fallback to sourcing ...
+        if use_wrapped and wrappers_dir.get(py_ver):
+            path = conda_env['PATH'].split(':'); path.insert(0, wrappers_dir[py_ver])
+            conda_env['PATH'] = ':'.join(path)
+            self._print('use_wrapped', conda_env['PATH'])
+        else:
+            global VENVS_ENVIRON
+            if py_ver != 'root':
+                if VENVS_ENVIRON.get(py_ver) is None or force_source:
+                    # speedup, avoid sourcing activate every time
+                    for bin_dir in venvs_bin_dir:
+                        version = os.path.basename(os.path.dirname(bin_dir))
+                        VENVS_ENVIRON[version] = self.shell_source(os.path.join(bin_dir, 'activate'), version)
+                self._print('--> env before', conda_env, sep='\n')
+                # self.shell_source(os.path.join(venvdir, 'activate'), py_ver)
+                conda_env.update(self.interpolate_extend_env(conda_env, VENVS_ENVIRON[py_ver]))
+                self._print('--> env after', conda_env, sep='\n')
+
+        # call __init__ with a new modified env
+        super(SubprocessReplVenv, self).__init__(encoding, cmd, conda_env, cwd, extend_env, soft_quit, autocomplete_server, **kwargs)

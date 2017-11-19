@@ -40,6 +40,10 @@ RESTART_MSG = """
 #############
 """
 
+CCODE1 = re.compile(r'\033\[\d*(;\d*)?\w')
+CCODE2 = re.compile(r'.\x08')
+CCODE3 = re.compile(r'\x01\x02')
+
 class ReplInsertTextCommand(sublime_plugin.TextCommand):
     def run(self, edit, pos, text):
         self.view.set_read_only(False)  # make sure view is writable
@@ -67,7 +71,7 @@ class ReplReader(threading.Thread):
     def run(self):
         r = self.repl
         q = self.queue
-        while True:
+        while 1:
             result = r.read()
             q.put(result)
             if result is None:
@@ -215,6 +219,7 @@ class ReplView(object):
 
         # begin refreshing attached view
         self.update_view_loop()
+        self.dct_tmp = dict()
 
     @property
     def external_id(self):
@@ -321,12 +326,13 @@ class ReplView(object):
         """Writes output from Repl into this view."""
         # remove color codes
         if self._filter_color_codes:
-            unistr = re.sub(r'\033\[\d*(;\d*)?\w', '', unistr)
-            unistr = re.sub(r'.\x08', '', unistr)
-            unistr = re.sub(r'\x01\x02', '', unistr)
+            unistr = CCODE3.sub('', CCODE2.sub('', CCODE1.sub('', unistr)))
 
         # string is assumed to be already correctly encoded
-        self._view.run_command("repl_insert_text", {"pos": self._output_end - self._prompt_size, "text": unistr})
+        dct = self.dct_tmp
+        dct['pos'] = self._output_end - self._prompt_size
+        dct['text'] = unistr
+        self._view.run_command("repl_insert_text", dct)
         self._output_end += len(unistr)
         self._view.show(self.input_region)
 
@@ -341,17 +347,19 @@ class ReplView(object):
         if edit:
             self._view.insert(edit, self._view.size(), text)
         else:
-            self._view.run_command("repl_insert_text", {"pos": self._view.size(), "text": text})
+            dct = self.dct_tmp
+            dct['pos'] = self._view.size()
+            dct['text'] = text
+            self._view.run_command("repl_insert_text", dct)
 
     def handle_repl_output(self):
         """Returns new data from Repl and bool indicating if Repl is still
            working"""
         try:
-            while True:
+            while 1:
                 packet = self._repl_reader.queue.get_nowait()
                 if packet is None:
                     return False
-
                 self.handle_repl_packet(packet)
 
         except queue.Empty:
@@ -378,7 +386,8 @@ class ReplView(object):
     def update_view_loop(self):
         is_still_working = self.handle_repl_output()
         if is_still_working:
-            sublime.set_timeout(self.update_view_loop, 100)
+            # run self.update_view_loop after a delay of XXX ms
+            sublime.set_timeout(self.update_view_loop, 5)
         else:
             self.write("\n***Repl Killed***\n""" if self.repl._killed else "\n***Repl Closed***\n""")
             self._view.set_read_only(True)
