@@ -301,7 +301,7 @@ VENVS_ENVIRON = dict()
 
 
 class SubprocessReplVenv(SubprocessRepl):
-    TYPE = 'subprocessvenv'
+    TYPE = 'spvenv'
 
     def _print(self, *args, **kwargs):
         if self.debug:
@@ -333,7 +333,7 @@ class SubprocessReplVenv(SubprocessRepl):
             found_dirs.update(list(map(os.path.dirname, glob.glob(pattern))))
         return sorted(found_dirs)
 
-    def __init__(self, encoding, cmd=None, env=None, cwd=None, extend_env=None,
+    def __init__(self, encoding, cmd=None, env=None, cwd=None, extend_env=dict(),
                  soft_quit="", autocomplete_server=False,
                  debug=False, force_source=False, **kwargs):
         # super(SubprocessRepl, self).__init__(encoding, **kwds)
@@ -343,8 +343,8 @@ class SubprocessReplVenv(SubprocessRepl):
         venv_paths = settings.get('python_virtualenv_paths')
         use_wrapped = settings.get('use_wrapped')
 
-        venvs_bin_dir = self.scan_for_virtualenvs(venv_paths)
-        wrappers_dir = {os.path.basename(os.path.dirname(_)): os.path.join(_, 'wrappers/conda') for _ in venvs_bin_dir}
+        venvs_bin_dir = {os.path.basename(os.path.dirname(_)): _ for _ in self.scan_for_virtualenvs(venv_paths)}
+        wrappers_dir = {k: os.path.join(v, 'wrappers/conda') for k, v in venvs_bin_dir.items()}
 
         self._print('venvs bin dirs', venvs_bin_dir)
         self._print('wrappers bin dirs', wrappers_dir)
@@ -352,9 +352,19 @@ class SubprocessReplVenv(SubprocessRepl):
         conda_env = env if env else self.getenv(settings)
         py_ver = extend_env.get('PY_VERSION', 'py3') if extend_env else 'py3'  # default 'py3' env
 
+        if 'PY_VERSION' not in extend_env:
+            extend_env['PY_VERSION'] = 'py3'
+
+        if 'PYTHONIOENCODING' not in extend_env:
+            extend_env['PYTHONIOENCODING'] = 'utf-8'
+
+        py_ver = extend_env['PY_VERSION']
+
         # using wrappers created with the conda package exec-wrappers, if not found, fallback to sourcing ...
         if use_wrapped and wrappers_dir.get(py_ver):
-            path = conda_env['PATH'].split(':'); path.insert(0, wrappers_dir[py_ver])
+            path = conda_env['PATH'].split(':')
+            path.insert(0, wrappers_dir[py_ver])
+            path.insert(1, venvs_bin_dir[py_ver])
             conda_env['PATH'] = ':'.join(path)
             self._print('use_wrapped', conda_env['PATH'])
         else:
@@ -362,13 +372,13 @@ class SubprocessReplVenv(SubprocessRepl):
             if py_ver != 'root':
                 if VENVS_ENVIRON.get(py_ver) is None or force_source:
                     # speedup, avoid sourcing activate every time
-                    for bin_dir in venvs_bin_dir:
-                        version = os.path.basename(os.path.dirname(bin_dir))
-                        VENVS_ENVIRON[version] = self.shell_source(os.path.join(bin_dir, 'activate'), version)
+                    for version in venvs_bin_dir.keys():
+                        VENVS_ENVIRON[version] = self.shell_source(os.path.join(venvs_bin_dir[version], 'activate'), version)
                 self._print('--> env before', conda_env, sep='\n')
                 # self.shell_source(os.path.join(venvdir, 'activate'), py_ver)
                 conda_env.update(self.interpolate_extend_env(conda_env, VENVS_ENVIRON[py_ver]))
                 self._print('--> env after', conda_env, sep='\n')
 
         # call __init__ with a new modified env
+        print(conda_env['PATH'])
         super(SubprocessReplVenv, self).__init__(encoding, cmd, conda_env, cwd, extend_env, soft_quit, autocomplete_server, **kwargs)

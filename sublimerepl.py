@@ -169,6 +169,7 @@ class ReplView(object):
         self._repl_reader = ReplReader(repl)
         self._repl_reader.start()
 
+        self._view_dct = dict()
         settings = sublime.load_settings(SETTINGS_FILE)
 
         view.settings().set("repl_external_id", repl.external_id)
@@ -219,7 +220,6 @@ class ReplView(object):
 
         # begin refreshing attached view
         self.update_view_loop()
-        self.dct_tmp = dict()
 
     @property
     def external_id(self):
@@ -329,7 +329,7 @@ class ReplView(object):
             unistr = CCODE3.sub('', CCODE2.sub('', CCODE1.sub('', unistr)))
 
         # string is assumed to be already correctly encoded
-        dct = self.dct_tmp
+        dct = self._view_dct
         dct['pos'] = self._output_end - self._prompt_size
         dct['text'] = unistr
         self._view.run_command("repl_insert_text", dct)
@@ -347,7 +347,7 @@ class ReplView(object):
         if edit:
             self._view.insert(edit, self._view.size(), text)
         else:
-            dct = self.dct_tmp
+            dct = self._view_dct
             dct['pos'] = self._view.size()
             dct['text'] = text
             self._view.run_command("repl_insert_text", dct)
@@ -484,7 +484,7 @@ class ReplManager(object):
             if rvid == external_id or external_id in additional_scopes:
                 yield rv
 
-    def open(self, window, encoding, type, syntax=None, view_id=None, **kwds):
+    def open(self, window, type, encoding='utf-8', syntax=None, view_id=None, **kwds):
         repl_restart_args = {
             'encoding': encoding,
             'type': type,
@@ -617,8 +617,8 @@ manager = ReplManager()
 
 # Opens a new REPL
 class ReplOpenCommand(sublime_plugin.WindowCommand):
-    def run(self, encoding, type, syntax=None, view_id=None, **kwds):
-        manager.open(self.window, encoding, type, syntax, view_id, **kwds)
+    def run(self, type, encoding='utf-8', syntax='Packages/Python Improved/PythonImproved.tmLanguage', view_id=None, **kwds):
+        manager.open(self.window, type, encoding, syntax, view_id, **kwds)
 
 
 class ReplRestartCommand(sublime_plugin.TextCommand):

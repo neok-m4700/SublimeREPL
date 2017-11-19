@@ -22,7 +22,7 @@ class Repl(object):
         """Returns subclass of Repl of given type eq. SubprocessRepl"""
         todo = [cls]
         seen = set()
-        while True:
+        while 1:
             if not todo:
                 raise NoReplError
             cur = todo.pop()
@@ -32,7 +32,7 @@ class Repl(object):
                 return cur
             todo.extend(cur.__subclasses__())
 
-    def __init__(self, encoding, external_id=None, cmd_postfix="\n", suppress_echo=False,
+    def __init__(self, encoding, external_id='python', cmd_postfix="\n", suppress_echo=False,
                  additional_scopes=None, apiv2=False):
         self.id = uuid4().hex
         self._encoding = encoding
