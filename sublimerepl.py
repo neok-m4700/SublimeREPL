@@ -43,10 +43,14 @@ RESTART_MSG = """
 CCODE1 = re.compile(r'\033\[\d*(;\d*)?\w')
 CCODE2 = re.compile(r'.\x08')
 CCODE3 = re.compile(r'\x01\x02')
+DEBUG = 0
+
 
 class ReplInsertTextCommand(sublime_plugin.TextCommand):
     def run(self, edit, pos, text):
         self.view.set_read_only(False)  # make sure view is writable
+        if DEBUG:
+            print('[insert @ %d]' % pos, text, end='')
         self.view.insert(edit, int(pos), text)
 
 
@@ -73,6 +77,8 @@ class ReplReader(threading.Thread):
         q = self.queue
         while 1:
             result = r.read()
+            if DEBUG and 0:
+                print('[REPL]', result, end='')
             q.put(result)
             if result is None:
                 break
@@ -325,15 +331,22 @@ class ReplView(object):
     def write(self, unistr):
         """Writes output from Repl into this view."""
         # remove color codes
+        unistr = unistr.expandtabs()  # lines with tabs are choped
+        if DEBUG and 0:
+            print('[write before]', unistr, end='')
         if self._filter_color_codes:
             unistr = CCODE3.sub('', CCODE2.sub('', CCODE1.sub('', unistr)))
+
+        length = len(unistr)
+        if DEBUG:
+            print('[write after %d]' % length, unistr, end='')
 
         # string is assumed to be already correctly encoded
         dct = self._view_dct
         dct['pos'] = self._output_end - self._prompt_size
         dct['text'] = unistr
         self._view.run_command("repl_insert_text", dct)
-        self._output_end += len(unistr)
+        self._output_end += length
         self._view.show(self.input_region)
 
     def write_prompt(self, unistr):
@@ -366,6 +379,8 @@ class ReplView(object):
             return True
 
     def handle_repl_packet(self, packet):
+        if DEBUG and 0:
+            print('[handle_repl_packet]', packet, end='')
         if self.repl.apiv2:
             for opcode, data in packet:
                 if opcode == 'output':
