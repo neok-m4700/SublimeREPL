@@ -34,11 +34,11 @@ PLATFORM = sublime.platform().lower()
 SETTINGS_FILE = 'SublimeREPL.sublime-settings'
 SUBLIME2 = sublime.version() < '3000'
 
-RESTART_MSG = """
+RESTART_MSG = '''
 #############
 ## RESTART ##
 #############
-"""
+'''
 
 CCODE1 = re.compile(r'\033\[\d*(;\d*)?\w')
 CCODE2 = re.compile(r'.\x08')
@@ -176,6 +176,8 @@ class ReplView(object):
         self._repl_reader.start()
 
         self._view_dct = dict()
+        self._stack = []
+        self._nitems = -1
         settings = sublime.load_settings(SETTINGS_FILE)
 
         view.settings().set("repl_external_id", repl.external_id)
@@ -218,7 +220,7 @@ class ReplView(object):
                 self._window.set_view_index(view, target, len(self._window.views_in_group(target)))
                 self._window.focus_view(oldview)
                 self._window.focus_view(view)
-        ## or, if simply set to true, move it to the next group from the currently active one
+        # or, if simply set to true, move it to the next group from the currently active one
         elif target and group + 1 < self._window.num_groups():
             self._window.set_view_index(view, group + 1, len(self._window.views_in_group(group + 1)))
             self._window.focus_view(oldview)
@@ -315,7 +317,7 @@ class ReplView(object):
         self._view.show(self.input_region)
 
     def update_view(self, view):
-        """If projects were switched, a view could be a new instance"""
+        '''If projects were switched, a view could be a new instance'''
         if self._view is not view:
             self._view = view
 
@@ -329,7 +331,8 @@ class ReplView(object):
             self._output_end = self._view.size()
 
     def write(self, unistr):
-        """Writes output from Repl into this view."""
+        '''Writes output from Repl into this view.'''
+
         # remove color codes
         unistr = unistr.expandtabs()  # lines with tabs are choped
         if DEBUG and 0:
@@ -350,8 +353,8 @@ class ReplView(object):
         self._view.show(self.input_region)
 
     def write_prompt(self, unistr):
-        """Writes prompt from REPL into this view. Prompt is treated like
-           regular output, except output is inserted before the prompt."""
+        '''Writes prompt from REPL into this view. Prompt is treated like
+           regular output, except output is inserted before the prompt.'''
         self._prompt_size = 0
         self.write(unistr)
         self._prompt_size = len(unistr)
@@ -366,17 +369,28 @@ class ReplView(object):
             self._view.run_command("repl_insert_text", dct)
 
     def handle_repl_output(self):
-        """Returns new data from Repl and bool indicating if Repl is still
-           working"""
+        '''Returns new data from Repl and bool indicating if Repl is still
+           working'''
         try:
             while 1:
                 packet = self._repl_reader.queue.get_nowait()
                 if packet is None:
+                    self.flush()
                     return False
                 self.handle_repl_packet(packet)
 
         except queue.Empty:
+            self.flush()  # handle remaining
             return True
+
+    def flush(self):
+        nitems = len(self._stack)
+        if DEBUG:
+            print(nitems, 'in stack')
+        if nitems > 20 or nitems == self._nitems:
+            self.write(''.join(self._stack))
+            self._stack.clear()
+        self._nitems = len(self._stack) or -1
 
     def handle_repl_packet(self, packet):
         if DEBUG and 0:
@@ -396,13 +410,18 @@ class ReplView(object):
                 else:
                     print('SublimeREPL: unknown REPL opcode: ' + opcode)
         else:
-            self.write(packet)
+            if 0:
+                self.write(packet)  # serial, if too many packet, hang
+            else:
+                # blocked write to window
+                self._stack.append(packet)
+                self.flush()
 
     def update_view_loop(self):
         is_still_working = self.handle_repl_output()
-        if is_still_working:
+        if is_still_working:  # empty queue
             # run self.update_view_loop after a delay of XXX ms
-            sublime.set_timeout(self.update_view_loop, 5)
+            sublime.set_timeout(self.update_view_loop, 100)
         else:
             self.write("\n***Repl Killed***\n""" if self.repl._killed else "\n***Repl Closed***\n""")
             self._view.set_read_only(True)
@@ -451,13 +470,13 @@ class ReplView(object):
 
     @property
     def user_input(self):
-        """Returns text entered by the user"""
+        '''Returns text entered by the user'''
         return self._view.substr(self.input_region)
 
     @property
     def delta(self):
-        """Return a repl_view and number of characters from current selection
-        to then begging of user_input (otherwise known as _output_end)"""
+        '''Return a repl_view and number of characters from current selection
+        to then begging of user_input (otherwise known as _output_end)'''
         return self._output_end - self._view.sel()[0].begin()
 
     def allow_deletion(self):
@@ -489,8 +508,8 @@ class ReplManager(object):
         return rv
 
     def find_repl(self, external_id):
-        """Yields rvews matching external_id taken from source.[external_id] scope
-           Match is done on external_id value of repl and additional_scopes"""
+        '''Yields rvews matching external_id taken from source.[external_id] scope
+           Match is done on external_id value of repl and additional_scopes'''
         for rv in self.repl_views.values():
             if not (rv.repl and rv.repl.is_alive()):
                 continue  # dead repl, skip
@@ -563,7 +582,7 @@ class ReplManager(object):
 
     @staticmethod
     def _subst_for_translate(window):
-        """ Return all available substitutions"""
+        ''' Return all available substitutions'''
         import locale
         res = {
             "packages": sublime.packages_path(),
@@ -625,6 +644,7 @@ class ReplManager(object):
             dictionary[k] = ReplManager.translate(window, v, subst)
         return dictionary
 
+
 manager = ReplManager()
 
 # Window Commands #########################################
@@ -675,8 +695,8 @@ class ReplEscapeCommand(sublime_plugin.TextCommand):
 
 
 def repl_view_delta(sublime_view):
-    """Return a repl_view and number of characters from current selection
-    to then beggingin of user_input (otherwise known as _output_end)"""
+    '''Return a repl_view and number of characters from current selection
+    to then beggingin of user_input (otherwise known as _output_end)'''
     rv = manager.repl_view(sublime_view)
     if not rv:
         return None, -1
@@ -789,6 +809,7 @@ class SublimeReplListener(sublime_plugin.EventListener):
 
         return None
 
+
 class SubprocessReplSendSignal(sublime_plugin.TextCommand):
     def run(self, edit, signal=None):
         rv = manager.repl_view(self.view)
@@ -796,11 +817,11 @@ class SubprocessReplSendSignal(sublime_plugin.TextCommand):
         signals = subrepl.available_signals()
         sorted_names = sorted(signals.keys())
         if signal in signals:
-            #signal given by name
+            # signal given by name
             self.safe_send_signal(subrepl, signals[signal])
             return
         if signal in list(signals.values()):
-            #signal given by code (correct one!)
+            # signal given by code (correct one!)
             self.safe_send_signal(subrepl, signal)
             return
 
