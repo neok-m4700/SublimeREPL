@@ -44,7 +44,7 @@ CCODE1 = re.compile(r'\033\[\d*(;\d*)?\w')
 CCODE2 = re.compile(r'.\x08')
 CCODE3 = re.compile(r'\x01\x02')
 DEBUG = 0
-
+THRESHOLD = 100  # print THRESHOLD by THRESHOLD lines
 
 class ReplInsertTextCommand(sublime_plugin.TextCommand):
     def run(self, edit, pos, text):
@@ -387,7 +387,7 @@ class ReplView(object):
         nitems = len(self._stack)
         if DEBUG:
             print(nitems, 'in stack')
-        if nitems > 20 or nitems == self._nitems:
+        if nitems > THRESHOLD or nitems == self._nitems:
             self.write(''.join(self._stack))
             self._stack.clear()
         self._nitems = len(self._stack) or -1

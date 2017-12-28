@@ -308,7 +308,7 @@ class SubprocessReplVenv(SubprocessRepl):
             _args = []
             for _ in args:
                 if isinstance(_, dict):
-                    _args.append('\n'.join(str((k, v)) for k, v in collections.OrderedDict(sorted(_.items())).items()))
+                    _args.append('\n'.join(['%s=%s' % (k, v) for k, v in collections.OrderedDict(sorted(_.items())).items()]))
                 else:
                     _args.append(_)
             print(*_args, **kwargs)
@@ -322,26 +322,40 @@ class SubprocessReplVenv(SubprocessRepl):
         stdout = subprocess.Popen(cmd, stdout=subprocess.PIPE).stdout
         return dict((line.split('=', 1) for line in stdout.read().decode().splitlines()))
 
-    def scan_for_virtualenvs(self, venv_paths):
-        'scans a directory for a dir named bin with a script activate in it'
+    def scan_for_virtualenvs(self, venv_paths, conda_min=4):
+        '''
+        conda 4.3.XXX
+        -----------------
+        scans a directory for a dir named bin with a script activate in it
+
+        conda  4.4.XXX
+        --------------
+        scans for a dir named dir
+        '''
         bin_dir = 'Scripts' if os.name == 'nt' else 'bin'
         found_dirs = set()
         for venv_path in venv_paths:
             p = os.path.expanduser(venv_path)
             # print(p)
-            pattern = os.path.join(p, '*', bin_dir, 'activate')
-            found_dirs.update(list(map(os.path.dirname, glob.glob(pattern))))
+            if conda_min == 3:
+                pattern = os.path.join(p, '*', bin_dir, 'activate')
+                found_dirs.update(list(map(os.path.dirname, glob.glob(pattern))))
+            else:
+                pattern = os.path.join(p, '*', bin_dir)
+                found_dirs.update(glob.glob(pattern))
+        print(found_dirs)
         return sorted(found_dirs)
 
     def __init__(self, encoding, cmd=None, env=None, cwd=None, extend_env=dict(),
-                 soft_quit="", autocomplete_server=False,
-                 debug=False, force_source=False, **kwargs):
+                 soft_quit="", autocomplete_server=False, **kwargs):
         # super(SubprocessRepl, self).__init__(encoding, **kwds)
-        self.debug = debug
 
         settings = load_settings('SublimeREPL.sublime-settings')
         venv_paths = settings.get('python_virtualenv_paths')
         use_wrapped = settings.get('use_wrapped')
+        force_source = settings.get('force_source')
+        conda_minor = settings.get('conda_minor')
+        self.debug = settings.get('debug')
 
         venvs_bin_dir = {os.path.basename(os.path.dirname(_)): _ for _ in self.scan_for_virtualenvs(venv_paths)}
         wrappers_dir = {k: os.path.join(v, 'wrappers/conda') for k, v in venvs_bin_dir.items()}
@@ -366,19 +380,26 @@ class SubprocessReplVenv(SubprocessRepl):
             path.insert(0, wrappers_dir[py_ver])
             path.insert(1, venvs_bin_dir[py_ver])
             conda_env['PATH'] = ':'.join(path)
-            self._print('use_wrapped', conda_env['PATH'])
+            self._print('\t==> use_wrapped <==')
         else:
             global VENVS_ENVIRON
-            if py_ver != 'root':
+            if py_ver not in ('root', 'base'):
                 if VENVS_ENVIRON.get(py_ver) is None or force_source:
+                    self._print('\t==> sourcing <==')
                     # speedup, avoid sourcing activate every time
                     for version in venvs_bin_dir.keys():
-                        VENVS_ENVIRON[version] = self.shell_source(os.path.join(venvs_bin_dir[version], 'activate'), version)
+                        if conda_minor == 3:
+                            # envs dir activate
+                            activate_dir = venvs_bin_dir[version]
+                        else:
+                            # root dir activate
+                            activate_dir = os.path.join(os.path.dirname(venv_paths[0]), 'bin')
+                        VENVS_ENVIRON[version] = self.shell_source(os.path.join(activate_dir, 'activate'), version)
                 self._print('--> env before', conda_env, sep='\n')
                 # self.shell_source(os.path.join(venvdir, 'activate'), py_ver)
                 conda_env.update(self.interpolate_extend_env(conda_env, VENVS_ENVIRON[py_ver]))
                 self._print('--> env after', conda_env, sep='\n')
 
         # call __init__ with a new modified env
-        print(conda_env['PATH'])
+        print('PATH used:', conda_env['PATH'])
         super(SubprocessReplVenv, self).__init__(encoding, cmd, conda_env, cwd, extend_env, soft_quit, autocomplete_server, **kwargs)
